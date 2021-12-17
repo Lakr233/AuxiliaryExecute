@@ -125,6 +125,7 @@ public extension AuxiliaryExecute {
     ///   - stdout: a block call from pipeReadQueue in background when buffer from stdout available for read
     ///   - stderr: a block call from pipeReadQueue in background when buffer from stderr available for read
     /// - Returns: execution recipe, see it's definition for details
+    @discardableResult
     func shell(
         command: String,
         args: [String] = [],
@@ -186,6 +187,7 @@ public extension AuxiliaryExecute {
     ///   - stdout: a block call from pipeReadQueue in background when buffer from stdout available for read
     ///   - stderr: a block call from pipeReadQueue in background when buffer from stderr available for read
     /// - Returns: execution recipe, see it's definition for details
+    @discardableResult
     func bash(
         command: String,
         environment: [String: String] = [:],
