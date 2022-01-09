@@ -43,6 +43,40 @@ public extension AuxiliaryExecute {
         }
         return result
     }
+    
+    /// call posix spawn to begin execute and block until the process exits
+    /// - Parameters:
+    ///   - command: full path of the binary file. eg: "/bin/cat"
+    ///   - args: arg to pass to the binary, exclude argv[0] which is the path itself. eg: ["nya"]
+    ///   - environment: any environment to be appended/overwrite when calling posix spawn. eg: ["mua" : "nya"]
+    ///   - timeout: any wall timeout if lager than 0, in seconds. eg: 6
+    ///   - stdout: a block call from pipeReadQueue in background when buffer from stdout available for read
+    ///   - stderr: a block call from pipeReadQueue in background when buffer from stderr available for read
+    /// - Returns: execution recipe, see it's definition for details
+    static func spawn(
+        command: String,
+        args: [String] = [],
+        environment: [String: String] = [:],
+        timeout: Double = 0,
+        stdoutBlock: ((String) -> Void)? = nil,
+        stderrBlock: ((String) -> Void)? = nil
+    ) -> ExecuteRecipe {
+        let sema = DispatchSemaphore(value: 0)
+        var recipe: ExecuteRecipe! = nil
+        spawn(
+            command: command,
+            args: args,
+            environment: environment,
+            timeout: timeout,
+            stdoutBlock: stdoutBlock,
+            stderrBlock: stderrBlock
+        ) {
+            recipe = $0
+            sema.signal()
+        }
+        sema.wait()
+        return recipe
+    }
 
     /// call posix spawn to begin execute
     /// - Parameters:
@@ -52,18 +86,16 @@ public extension AuxiliaryExecute {
     ///   - timeout: any wall timeout if lager than 0, in seconds. eg: 6
     ///   - stdout: a block call from pipeReadQueue in background when buffer from stdout available for read
     ///   - stderr: a block call from pipeReadQueue in background when buffer from stderr available for read
-    /// - Returns: execution recipe, see it's definition for details
-    @discardableResult
+    ///   - completion: a block called from processControlQueue or current queue when the process is finished or an error occurred
     static func spawn(
         command: String,
         args: [String] = [],
         environment: [String: String] = [:],
         timeout: Double = 0,
         stdoutBlock: ((String) -> Void)? = nil,
-        stderrBlock: ((String) -> Void)? = nil
-    )
-        -> ExecuteRecipe
-    {
+        stderrBlock: ((String) -> Void)? = nil,
+        completionBlock: ((ExecuteRecipe) -> Void)? = nil
+    ) {
         // MARK: PREPARE FILE PIPE -
 
         var pipestdout: [Int32] = [0, 0]
@@ -75,20 +107,24 @@ public extension AuxiliaryExecute {
         pipe(&pipestderr)
 
         guard fcntl(pipestdout[0], F_SETFL, O_NONBLOCK) != -1 else {
-            return .init(
+            let recipe = ExecuteRecipe(
                 exitCode: -1,
                 error: .openFilePipeFailed,
                 stdout: "",
                 stderr: ""
             )
+            completionBlock?(recipe)
+            return
         }
         guard fcntl(pipestderr[0], F_SETFL, O_NONBLOCK) != -1 else {
-            return .init(
+            let recipe = ExecuteRecipe(
                 exitCode: -1,
                 error: .openFilePipeFailed,
                 stdout: "",
                 stderr: ""
             )
+            completionBlock?(recipe)
+            return
         }
 
         // MARK: PREPARE FILE ACTION -
@@ -151,12 +187,14 @@ public extension AuxiliaryExecute {
         var pid: pid_t = 0
         let spawnStatus = posix_spawn(&pid, command, &fileActions, nil, argv + [nil], realEnv + [nil])
         if spawnStatus != 0 {
-            return .init(
+            let recipe = ExecuteRecipe(
                 exitCode: -1,
                 error: .posixSpawnFailed,
                 stdout: "",
                 stderr: ""
             )
+            completionBlock?(recipe)
+            return
         }
 
         close(pipestdout[1])
@@ -165,8 +203,6 @@ public extension AuxiliaryExecute {
         var stdoutStr = ""
         var stderrStr = ""
 
-        let mutex = DispatchSemaphore(value: 0)
-
         // MARK: OUTPUT BRIDGE -
 
         let stdoutSource = DispatchSource.makeReadSource(fileDescriptor: pipestdout[0], queue: pipeReadQueue)
@@ -174,11 +210,9 @@ public extension AuxiliaryExecute {
 
         stdoutSource.setCancelHandler {
             close(pipestdout[0])
-            mutex.signal()
         }
         stderrSource.setCancelHandler {
             close(pipestderr[0])
-            mutex.signal()
         }
 
         stdoutSource.setEventHandler {
@@ -225,62 +259,37 @@ public extension AuxiliaryExecute {
         stderrSource.resume()
 
         // MARK: WAIT + TIMEOUT CONTROL -
+        
+        func handleProcessExit(isTimeout: Bool, status: Int32) {
+            let code = Int(exactly: status) ?? -1 // ??? what ???
+    
+            let recipe = ExecuteRecipe(
+                exitCode: code,
+                error: isTimeout ? .timeout : nil,
+                stdout: stdoutStr,
+                stderr: stderrStr
+            )
+            completionBlock?(recipe)
+        }
 
-        // the terminate process is a little bit tricky
-        // listen carefully
-
-        var everTimeout: Bool = false
         let realTimeout = timeout > 0 ? timeout : 2_147_483_647
-        let wallTimeout = DispatchWallTime.now() + realTimeout
-
-        let waitResultA = mutex.wait(wallTimeout: wallTimeout)
-        if waitResultA == .timedOut {
-            // if the first pipe failed to close in limit
-            // that means timeout alreay occurred
-            // perform a kill
-            kill(pid, SIGKILL)
-            everTimeout = true
-        }
-
-        let waitResultB = mutex.wait(wallTimeout: wallTimeout)
-        if waitResultB == .timedOut {
-            // the second pipe may still timeout
-            // perform a kill just in case
-            kill(pid, SIGKILL)
-            everTimeout = true
-        }
-
-        func isNotTimeout() -> Bool {
-            let result = wallTimeout >= .now()
-            if !result { everTimeout = true }
-            return result
-        }
-
+        
         var status: Int32 = 0
         var wait: pid_t = 0
-        // now, let's loop over the waitpid func
-        // as process may close file handler to bypass the timeout limit
-        repeat {
-            wait = waitpid(pid, &status, WUNTRACED | WCONTINUED)
-        } while Signal.continueWaitLoop(wait) && isNotTimeout()
-
-        // now, either process terminated it self, or timeout occurred
-        if everTimeout {
+        var isTimeout = false
+        
+        let processSource = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: processControlQueue)
+        processSource.setEventHandler {
+            wait = waitpid(pid, &status, 0)
+            processSource.cancel()
+            handleProcessExit(isTimeout: isTimeout, status: status)
+        }
+        processSource.resume()
+        
+        // timeout control
+        processControlQueue.asyncAfter(deadline: .now() + realTimeout) {
+            isTimeout = true
             kill(pid, SIGKILL)
         }
-
-        // wait for the final time
-        waitpid(pid, &status, 0)
-
-        // MARK: DONE -
-
-        let code = Int(exactly: status) ?? -1 // ??? what ???
-
-        return .init(
-            exitCode: code,
-            error: everTimeout ? .timeout : nil,
-            stdout: stdoutStr,
-            stderr: stderrStr
-        )
     }
 }

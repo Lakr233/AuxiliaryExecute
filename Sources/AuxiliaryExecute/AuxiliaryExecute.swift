@@ -34,6 +34,12 @@ public class AuxiliaryExecute {
         label: "wiki.qaq.AuxiliaryExecute.pipeRead",
         attributes: .concurrent
     )
+    
+    /// when killing process or monitoring events from process, must called from async queue
+    internal static let processControlQueue = DispatchQueue(
+        label: "wiki.qaq.AuxiliaryExecute.processControl",
+        attributes: []
+    )
 
     /// used for setting binary table, avoid crash
     internal let lock = NSLock()
