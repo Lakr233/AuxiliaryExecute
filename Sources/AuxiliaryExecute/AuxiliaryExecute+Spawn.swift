@@ -14,7 +14,7 @@ public extension AuxiliaryExecute {
     ///   - args: arg to pass to the binary, exclude argv[0] which is the path itself. eg: ["nya"]
     ///   - environment: any environment to be appended/overwrite when calling posix spawn. eg: ["mua" : "nya"]
     ///   - timeout: any wall timeout if lager than 0, in seconds. eg: 6
-    ///   - output: a block call from pipeReadQueue in background when buffer from stdout or stderr available for read
+    ///   - output: a block call from pipeControlQueue in background when buffer from stdout or stderr available for read
     /// - Returns: execution recipe, see it's definition for details
     @discardableResult
     static func spawn(
@@ -43,15 +43,15 @@ public extension AuxiliaryExecute {
         }
         return result
     }
-    
+
     /// call posix spawn to begin execute and block until the process exits
     /// - Parameters:
     ///   - command: full path of the binary file. eg: "/bin/cat"
     ///   - args: arg to pass to the binary, exclude argv[0] which is the path itself. eg: ["nya"]
     ///   - environment: any environment to be appended/overwrite when calling posix spawn. eg: ["mua" : "nya"]
     ///   - timeout: any wall timeout if lager than 0, in seconds. eg: 6
-    ///   - stdout: a block call from pipeReadQueue in background when buffer from stdout available for read
-    ///   - stderr: a block call from pipeReadQueue in background when buffer from stderr available for read
+    ///   - stdout: a block call from pipeControlQueue in background when buffer from stdout available for read
+    ///   - stderr: a block call from pipeControlQueue in background when buffer from stderr available for read
     /// - Returns: execution recipe, see it's definition for details
     static func spawn(
         command: String,
@@ -62,7 +62,7 @@ public extension AuxiliaryExecute {
         stderrBlock: ((String) -> Void)? = nil
     ) -> ExecuteRecipe {
         let sema = DispatchSemaphore(value: 0)
-        var recipe: ExecuteRecipe! = nil
+        var recipe: ExecuteRecipe!
         spawn(
             command: command,
             args: args,
@@ -84,8 +84,8 @@ public extension AuxiliaryExecute {
     ///   - args: arg to pass to the binary, exclude argv[0] which is the path itself. eg: ["nya"]
     ///   - environment: any environment to be appended/overwrite when calling posix spawn. eg: ["mua" : "nya"]
     ///   - timeout: any wall timeout if lager than 0, in seconds. eg: 6
-    ///   - stdout: a block call from pipeReadQueue in background when buffer from stdout available for read
-    ///   - stderr: a block call from pipeReadQueue in background when buffer from stderr available for read
+    ///   - stdout: a block call from pipeControlQueue in background when buffer from stdout available for read
+    ///   - stderr: a block call from pipeControlQueue in background when buffer from stderr available for read
     ///   - completion: a block called from processControlQueue or current queue when the process is finished or an error occurred
     static func spawn(
         command: String,
@@ -107,22 +107,12 @@ public extension AuxiliaryExecute {
         pipe(&pipestderr)
 
         guard fcntl(pipestdout[0], F_SETFL, O_NONBLOCK) != -1 else {
-            let recipe = ExecuteRecipe(
-                exitCode: -1,
-                error: .openFilePipeFailed,
-                stdout: "",
-                stderr: ""
-            )
+            let recipe = ExecuteRecipe.failure(error: .openFilePipeFailed)
             completionBlock?(recipe)
             return
         }
         guard fcntl(pipestderr[0], F_SETFL, O_NONBLOCK) != -1 else {
-            let recipe = ExecuteRecipe(
-                exitCode: -1,
-                error: .openFilePipeFailed,
-                stdout: "",
-                stderr: ""
-            )
+            let recipe = ExecuteRecipe.failure(error: .openFilePipeFailed)
             completionBlock?(recipe)
             return
         }
@@ -187,12 +177,7 @@ public extension AuxiliaryExecute {
         var pid: pid_t = 0
         let spawnStatus = posix_spawn(&pid, command, &fileActions, nil, argv + [nil], realEnv + [nil])
         if spawnStatus != 0 {
-            let recipe = ExecuteRecipe(
-                exitCode: -1,
-                error: .posixSpawnFailed,
-                stdout: "",
-                stderr: ""
-            )
+            let recipe = ExecuteRecipe.failure(error: .posixSpawnFailed)
             completionBlock?(recipe)
             return
         }
@@ -205,8 +190,8 @@ public extension AuxiliaryExecute {
 
         // MARK: OUTPUT BRIDGE -
 
-        let stdoutSource = DispatchSource.makeReadSource(fileDescriptor: pipestdout[0], queue: pipeReadQueue)
-        let stderrSource = DispatchSource.makeReadSource(fileDescriptor: pipestderr[0], queue: pipeReadQueue)
+        let stdoutSource = DispatchSource.makeReadSource(fileDescriptor: pipestdout[0], queue: pipeControlQueue)
+        let stderrSource = DispatchSource.makeReadSource(fileDescriptor: pipestderr[0], queue: pipeControlQueue)
 
         stdoutSource.setCancelHandler {
             close(pipestdout[0])
@@ -259,12 +244,21 @@ public extension AuxiliaryExecute {
         stderrSource.resume()
 
         // MARK: WAIT + TIMEOUT CONTROL -
-        
+
+        let realTimeout = timeout > 0 ? timeout : maxTimeoutValue
+        let wallTimeout = DispatchTime.now() + (
+            TimeInterval(exactly: realTimeout) ?? maxTimeoutValue
+        )
+        var status: Int32 = 0
+        var wait: pid_t = 0
+        var isTimeout = false
+
         func handleProcessExit(isTimeout: Bool, status: Int32) {
-            let code = Int(exactly: status) ?? -1 // ??? what ???
-    
+            // by using exactly method, we won't crash it!
             let recipe = ExecuteRecipe(
-                exitCode: code,
+                exitCode: Int(exactly: status) ?? -1,
+                pid: Int(exactly: pid) ?? -1,
+                wait: Int(exactly: wait) ?? -1,
                 error: isTimeout ? .timeout : nil,
                 stdout: stdoutStr,
                 stderr: stderrStr
@@ -272,12 +266,6 @@ public extension AuxiliaryExecute {
             completionBlock?(recipe)
         }
 
-        let realTimeout = timeout > 0 ? timeout : 2_147_483_647
-        
-        var status: Int32 = 0
-        var wait: pid_t = 0
-        var isTimeout = false
-        
         let processSource = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: processControlQueue)
         processSource.setEventHandler {
             wait = waitpid(pid, &status, 0)
@@ -285,9 +273,9 @@ public extension AuxiliaryExecute {
             handleProcessExit(isTimeout: isTimeout, status: status)
         }
         processSource.resume()
-        
+
         // timeout control
-        processControlQueue.asyncAfter(deadline: .now() + realTimeout) {
+        processControlQueue.asyncAfter(deadline: wallTimeout) {
             isTimeout = true
             kill(pid, SIGKILL)
         }
