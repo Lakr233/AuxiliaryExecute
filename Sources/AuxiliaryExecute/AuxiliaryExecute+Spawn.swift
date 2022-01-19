@@ -252,7 +252,7 @@ public extension AuxiliaryExecute {
         var status: Int32 = 0
         var wait: pid_t = 0
         var isTimeout = false
-        
+
         let timerSource = DispatchSource.makeTimerSource(flags: [], queue: processControlQueue)
         timerSource.setEventHandler {
             isTimeout = true
@@ -262,10 +262,10 @@ public extension AuxiliaryExecute {
         let processSource = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: processControlQueue)
         processSource.setEventHandler {
             wait = waitpid(pid, &status, 0)
-            
+
             processSource.cancel()
             timerSource.cancel()
-            
+
             // by using exactly method, we won't crash it!
             let recipe = ExecuteRecipe(
                 exitCode: Int(exactly: status) ?? -1,

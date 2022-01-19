@@ -2,7 +2,8 @@
 import XCTest
 
 final class AuxiliaryExecuteTests: XCTestCase {
-    func testExample() throws {
+    
+    func testMain() async throws {
         XCTAssertNotNil(Int(exactly: AuxiliaryExecute.maxTimeoutValue))
         XCTAssertNotNil(Int32(exactly: AuxiliaryExecute.maxTimeoutValue))
         XCTAssertNotNil(Double(exactly: AuxiliaryExecute.maxTimeoutValue))

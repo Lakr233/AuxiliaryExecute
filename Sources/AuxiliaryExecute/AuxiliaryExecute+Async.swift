@@ -59,15 +59,20 @@
             timeout: Double = 0,
             output: ((String) -> Void)? = nil
         ) async -> ExecuteRecipe {
-            await spawnAsync(
+            let lock = NSLock()
+            return await spawnAsync(
                 command: command,
                 args: args,
                 environment: environment,
                 timeout: timeout,
                 stdoutBlock: { str in
+                    lock.lock()
                     output?(str)
+                    lock.unlock()
                 }, stderrBlock: { str in
+                    lock.lock()
                     output?(str)
+                    lock.unlock()
                 }
             )
         }
