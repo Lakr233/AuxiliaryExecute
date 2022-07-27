@@ -201,11 +201,16 @@ public extension AuxiliaryExecute {
         let stdoutSource = DispatchSource.makeReadSource(fileDescriptor: pipestdout[0], queue: pipeControlQueue)
         let stderrSource = DispatchSource.makeReadSource(fileDescriptor: pipestderr[0], queue: pipeControlQueue)
 
+        let stdoutSem = DispatchSemaphore(value: 0)
+        let stderrSem = DispatchSemaphore(value: 0)
+        
         stdoutSource.setCancelHandler {
             close(pipestdout[0])
+            stdoutSem.signal()
         }
         stderrSource.setCancelHandler {
             close(pipestderr[0])
+            stderrSem.signal()
         }
 
         stdoutSource.setEventHandler {
@@ -274,6 +279,9 @@ public extension AuxiliaryExecute {
             processSource.cancel()
             timerSource.cancel()
 
+            stdoutSem.wait()
+            stderrSem.wait()
+            
             // by using exactly method, we won't crash it!
             let recipe = ExecuteRecipe(
                 exitCode: Int(exactly: status) ?? -1,
