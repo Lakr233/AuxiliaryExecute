@@ -203,7 +203,7 @@ public extension AuxiliaryExecute {
 
         let stdoutSem = DispatchSemaphore(value: 0)
         let stderrSem = DispatchSemaphore(value: 0)
-        
+
         stdoutSource.setCancelHandler {
             close(pipestdout[0])
             stdoutSem.signal()
@@ -281,7 +281,7 @@ public extension AuxiliaryExecute {
 
             stdoutSem.wait()
             stderrSem.wait()
-            
+
             // by using exactly method, we won't crash it!
             let recipe = ExecuteRecipe(
                 exitCode: Int(exactly: status) ?? -1,
