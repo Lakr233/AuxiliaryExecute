@@ -7,12 +7,21 @@
 
 import Foundation
 
+
+@_silgen_name("posix_spawn_file_actions_addchdir_np")
+@discardableResult
+private func posix_spawn_file_actions_addchdir_np(
+    _ attr: UnsafeMutablePointer<posix_spawn_file_actions_t?>,
+    _ dir: UnsafePointer<Int8>
+) -> Int32
+
 public extension AuxiliaryExecute {
     /// call posix spawn to begin execute
     /// - Parameters:
     ///   - command: full path of the binary file. eg: "/bin/cat"
     ///   - args: arg to pass to the binary, exclude argv[0] which is the path itself. eg: ["nya"]
     ///   - environment: any environment to be appended/overwrite when calling posix spawn. eg: ["mua" : "nya"]
+    ///   - workingDirectory: chdir
     ///   - timeout: any wall timeout if lager than 0, in seconds. eg: 6
     ///   - output: a block call from pipeControlQueue in background when buffer from stdout or stderr available for read
     /// - Returns: execution receipt, see it's definition for details
@@ -21,6 +30,7 @@ public extension AuxiliaryExecute {
         command: String,
         args: [String] = [],
         environment: [String: String] = [:],
+        workingDirectory: String? = nil,
         timeout: Double = 0,
         setPid: ((pid_t) -> Void)? = nil,
         output: ((String) -> Void)? = nil
@@ -32,6 +42,7 @@ public extension AuxiliaryExecute {
             command: command,
             args: args,
             environment: environment,
+            workingDirectory: workingDirectory,
             timeout: timeout,
             setPid: setPid
         ) { str in
@@ -51,6 +62,7 @@ public extension AuxiliaryExecute {
     ///   - command: full path of the binary file. eg: "/bin/cat"
     ///   - args: arg to pass to the binary, exclude argv[0] which is the path itself. eg: ["nya"]
     ///   - environment: any environment to be appended/overwrite when calling posix spawn. eg: ["mua" : "nya"]
+    ///   - workingDirectory: chdir
     ///   - timeout: any wall timeout if lager than 0, in seconds. eg: 6
     ///   - stdout: a block call from pipeControlQueue in background when buffer from stdout available for read
     ///   - stderr: a block call from pipeControlQueue in background when buffer from stderr available for read
@@ -59,6 +71,7 @@ public extension AuxiliaryExecute {
         command: String,
         args: [String] = [],
         environment: [String: String] = [:],
+        workingDirectory: String? = nil,
         timeout: Double = 0,
         setPid: ((pid_t) -> Void)? = nil,
         stdoutBlock: ((String) -> Void)? = nil,
@@ -70,6 +83,7 @@ public extension AuxiliaryExecute {
             command: command,
             args: args,
             environment: environment,
+            workingDirectory: workingDirectory,
             timeout: timeout,
             setPid: setPid,
             stdoutBlock: stdoutBlock,
@@ -87,6 +101,7 @@ public extension AuxiliaryExecute {
     ///   - command: full path of the binary file. eg: "/bin/cat"
     ///   - args: arg to pass to the binary, exclude argv[0] which is the path itself. eg: ["nya"]
     ///   - environment: any environment to be appended/overwrite when calling posix spawn. eg: ["mua" : "nya"]
+    ///   - workingDirectory: chdir file action
     ///   - timeout: any wall timeout if lager than 0, in seconds. eg: 6
     ///   - setPid: called sync when pid available
     ///   - stdoutBlock: a block call from pipeControlQueue in background when buffer from stdout available for read
@@ -96,6 +111,7 @@ public extension AuxiliaryExecute {
         command: String,
         args: [String] = [],
         environment: [String: String] = [:],
+        workingDirectory: String? = nil,
         timeout: Double = 0,
         setPid: ((pid_t) -> Void)? = nil,
         stdoutBlock: ((String) -> Void)? = nil,
@@ -134,9 +150,11 @@ public extension AuxiliaryExecute {
         posix_spawn_file_actions_addclose(&fileActions, pipestdout[1])
         posix_spawn_file_actions_addclose(&fileActions, pipestderr[1])
 
-        defer {
-            posix_spawn_file_actions_destroy(&fileActions)
+        if let workingDirectory = workingDirectory {
+            posix_spawn_file_actions_addchdir_np(&fileActions, workingDirectory)
         }
+        
+        defer { posix_spawn_file_actions_destroy(&fileActions) }
 
         // MARK: PREPARE ENV -
 

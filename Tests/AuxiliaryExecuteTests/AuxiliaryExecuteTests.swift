@@ -67,38 +67,56 @@ final class AuxiliaryExecuteTests: XCTestCase {
             XCTAssert(result.exitCode == SIGKILL)
             XCTAssert(result.error == .timeout)
         }
+        
+        do {
+            chdir("/")
+            let name = "test_\(UUID().uuidString)"
+            let url = URL(fileURLWithPath: "/tmp")
+                .appendingPathComponent(name)
+            try? FileManager.default.removeItem(at: url)
+            let result = AuxiliaryExecute.spawn(command: "/bin/mkdir", args: [name], workingDirectory: "/tmp")
+            print(result)
+            XCTAssert(result.exitCode == 0)
+            XCTAssertNil(result.error)
+            XCTAssert(FileManager.default.fileExists(atPath: url.path))
+            try? FileManager.default.removeItem(at: url)
+        }
     }
 
     @available(macOS 12.0.0, *)
     func testAsync() async throws {
         do {
-            let result = await AuxiliaryExecute.spawnAsync(
-                command: "/usr/bin/uname",
-                args: ["-a"],
-                timeout: 1
-            ) { stdout in
-                print(stdout)
-            } stderrBlock: { stderr in
-                print(stderr)
+            if #available(iOS 15.0, *) {
+                let result = await AuxiliaryExecute.spawnAsync(
+                    command: "/usr/bin/uname",
+                    args: ["-a"],
+                    timeout: 1
+                ) { stdout in
+                    print(stdout)
+                } stderrBlock: { stderr in
+                    print(stderr)
+                }
+                
+                XCTAssertEqual(result.exitCode, 0)
+                XCTAssert(result.stdout.contains("Darwin Kernel"))
             }
-
-            XCTAssertEqual(result.exitCode, 0)
-            XCTAssert(result.stdout.contains("Darwin Kernel"))
         }
 
         do {
-            let result = await AuxiliaryExecute.spawnAsync(
-                command: "/usr/bin/tail",
-                args: ["-f", "/dev/null"],
-                timeout: 1
-            ) { stdout in
-                print(stdout)
-            } stderrBlock: { stderr in
-                print(stderr)
+            if #available(iOS 15.0, *) {
+                let result = await AuxiliaryExecute.spawnAsync(
+                    command: "/usr/bin/tail",
+                    args: ["-f", "/dev/null"],
+                    timeout: 1
+                ) { stdout in
+                    print(stdout)
+                } stderrBlock: { stderr in
+                    print(stderr)
+                }
+                
+                XCTAssertEqual(result.exitCode, Int(SIGKILL))
+                XCTAssertEqual(result.error, .timeout)
             }
-
-            XCTAssertEqual(result.exitCode, Int(SIGKILL))
-            XCTAssertEqual(result.error, .timeout)
         }
     }
 }
